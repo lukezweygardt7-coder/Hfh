@@ -1,0 +1,78 @@
+name: Build Shotgun Mod
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Works both when the project files are in the repo root AND when you only
+      # uploaded the .zip to the repo root (it unzips it and finds build.gradle).
+      - name: Locate project (unzip if needed)
+        run: |
+          if [ -f build.gradle ]; then
+            ROOT="."
+          else
+            ZIP=$(ls -1 *.zip 2>/dev/null | head -n1 || true)
+            if [ -z "$ZIP" ]; then
+              echo "::error::No build.gradle and no .zip found in the repository root."
+              exit 1
+            fi
+            echo "Unzipping $ZIP"
+            rm -rf _project && mkdir _project
+            unzip -q -o "$ZIP" -d _project
+            GRADLE_FILE=$(find _project -name build.gradle -not -path '*/__MACOSX/*' | head -n1)
+            if [ -z "$GRADLE_FILE" ]; then
+              echo "::error::build.gradle not found inside $ZIP"
+              exit 1
+            fi
+            ROOT=$(dirname "$GRADLE_FILE")
+          fi
+          echo "Project directory: $ROOT"
+          echo "PROJECT_DIR=$ROOT" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.5
+
+      - name: Build mod jar
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ -f ./gradlew ]; then chmod +x ./gradlew && ./gradlew build --no-daemon; else gradle build --no-daemon; fi
+
+      - name: Collect jar
+        run: |
+          mkdir -p dist
+          cp "$PROJECT_DIR"/build/libs/*.jar dist/
+          rm -f dist/*-sources.jar dist/*-dev.jar
+          ls -la dist
+
+      - name: Upload jar (Actions > run > Artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pump-shotgun-mod
+          path: dist/*.jar
+
+      # Also publishes a GitHub Release so you get a plain download link for the .jar
+      - name: Publish release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Pump Shotgun build ${{ github.run_number }}
+          files: dist/*.jar
